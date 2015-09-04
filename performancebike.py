@@ -10,13 +10,6 @@ import urllib2
 from models import Component
 
 
-def clean(s):
-  return s.strip().strip(':')
-
-def parse_currency(s):
-  return float(s.strip('$').replace(',', ''))
-
-
 PAGE_SIZE = 12
 
 
@@ -74,7 +67,8 @@ class PageParser(object):
 
   def get_by_selector(self, selector):
     '''Return all tag contents matching selector'''
-    return [clean(tag.string) for tag in self.page.select(selector) if tag]
+    return [tag.string.strip().strip(':')
+            for tag in self.page.select(selector) if tag]
 
   def get_first_by_selector(self, selector):
     '''Return content of first tag matching selector'''
@@ -89,6 +83,11 @@ class PageParser(object):
     '''
     return zip(*(self.get_by_selector(selector) for selector in selectors))
 
+  def parse_currency(self, s):
+    '''Parse currency string to a float'''
+    return float(s.strip('$').replace(',', ''))
+
+
 
 class ComponentPageParser(PageParser):
   def parse(self):
@@ -96,7 +95,7 @@ class ComponentPageParser(PageParser):
       'name': self.get_first_by_selector('.product_title').strip(),
       'specs': dict(self.parse_table(
         ['#specsDiv > dl > dt', '#specsDiv > dl > dd'])),
-      'price': parse_currency(
+      'price': self.parse_currency(
         self.get_first_by_selector('.sr_product_price .sale_price_val') or
         self.get_by_selector('.sr_product_price .list_price_val')),
       'source': self.source,
@@ -123,7 +122,8 @@ if __name__ == '__main__':
   #for url in urls:
   #  comp = Component.create(**ComponentPageParser(url).parse())
 
-  #for comp in Component.select():
-  #  print '%s (%s) - %s' % (comp.name, comp.price, comp.source)
+  for comp in Component.select():
+    print '%s (%s) - %s' % (comp.name, comp.price, comp.source)
 
+  # Test getting all product URLs given the first page of a category
   print get_product_urls('http://www.performancebike.com/bikes/SubCategory_10052_10551_400219_-1_400002_400038')
