@@ -18,17 +18,19 @@ def parse_currency(s):
 
 
 PAGE_SIZE = 12
-#http://www.performancebike.com/bikes/SubCategory_10052_10551_400219_-1_400002_400038?beginIndex=12&pageSize=12
+
 
 def get_product_count(category_url):
   '''Given category page, get total product count'''
   # TODO: make this not terrible / hardcoded to DOM assumptions
   page = PageParser(category_url)
   s = page.get_first_by_selector('.item-numbers').strip()
+  # It's going to be the last number in this tag
   match = re.search(re.compile('[0-9]+$'), s)
   if match:
     return int(match.group(0))
   return None
+
 
 def get_paginated_urls(category_url):
   '''Given first page's URL (no params), return all available paginated URLs'''
@@ -37,16 +39,30 @@ def get_paginated_urls(category_url):
 
   urls = [category_url]
   if num_pages > 1:
-    for p in xrange(1, num_pages + 1):
-      urls.append(
-        category_url + '?' +
-        urllib.urlencode({'pageSize': PAGE_SIZE, 'beginIndex': p * PAGE_SIZE})
-      )
+    urls += [(
+      category_url + '?' +
+      urllib.urlencode({'pageSize': PAGE_SIZE, 'beginIndex': p * PAGE_SIZE})
+    ) for p in xrange(1, num_pages + 1)]
   return urls
+
 
 def get_product_urls(category_url):
   '''Given category first page URL (no params), return all product URLs'''
-  pass
+  page_urls = get_paginated_urls(category_url)
+  product_urls = []
+  for page_url in page_urls:
+    page = CatalogPageParser(page_url)
+    product_urls += [
+      get_absolute_url(page_url, product_url) for product_url in
+      page.parse().get('product_urls', [])
+    ]
+  return product_urls
+
+
+def get_absolute_url(parent_url, relative_url):
+  '''Given parent url and relative url, generate the absolute url'''
+  base_url = '/'.join(parent_url.split('/')[:-1])
+  return '/'.join([base_url, relative_url])
 
 
 class PageParser(object):
@@ -56,17 +72,6 @@ class PageParser(object):
   def __init__(self, url):
     self.page = BeautifulSoup(urllib2.urlopen(url))
 
-  def parse_page(self):
-    return {
-      'name': self.get_first_by_selector('.product_title').strip(),
-      'specs': dict(self.parse_table(
-        ['#specsDiv > dl > dt', '#specsDiv > dl > dd'])),
-      'price': parse_currency(
-        self.get_first_by_selector('.sr_product_price .sale_price_val') or
-        self.get_by_selector('.sr_product_price .list_price_val')),
-      'source': self.source,
-    }
-  
   def get_by_selector(self, selector):
     '''Return all tag contents matching selector'''
     return [clean(tag.string) for tag in self.page.select(selector) if tag]
@@ -85,6 +90,27 @@ class PageParser(object):
     return zip(*(self.get_by_selector(selector) for selector in selectors))
 
 
+class ComponentPageParser(PageParser):
+  def parse(self):
+    return {
+      'name': self.get_first_by_selector('.product_title').strip(),
+      'specs': dict(self.parse_table(
+        ['#specsDiv > dl > dt', '#specsDiv > dl > dd'])),
+      'price': parse_currency(
+        self.get_first_by_selector('.sr_product_price .sale_price_val') or
+        self.get_by_selector('.sr_product_price .list_price_val')),
+      'source': self.source,
+    }
+
+
+class CatalogPageParser(PageParser):
+  '''Parse a catalog listing page'''
+  def parse(self):
+    return {
+      'product_urls': [tag.get('href') for tag in self.page.select('.product-info h2 a')],
+    }
+
+
 if __name__ == '__main__':
   urls = [
     # component page
@@ -95,10 +121,9 @@ if __name__ == '__main__':
 
   # Scrape pages and dump data into sqlite db
   #for url in urls:
-  #  comp = Component.create(**PageParser(url).parse_page())
+  #  comp = Component.create(**ComponentPageParser(url).parse())
 
-  for comp in Component.select():
-    print '%s (%s) - %s' % (comp.name, comp.price, comp.source)
+  #for comp in Component.select():
+  #  print '%s (%s) - %s' % (comp.name, comp.price, comp.source)
 
-  print get_paginated_urls('http://www.performancebike.com/bikes/SubCategory_10052_10551_400219_-1_400002_400038')
-
+  print get_product_urls('http://www.performancebike.com/bikes/SubCategory_10052_10551_400219_-1_400002_400038')
