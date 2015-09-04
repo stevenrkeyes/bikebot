@@ -10,48 +10,6 @@ import urllib2
 from models import Component
 
 
-PAGE_SIZE = 12
-
-
-def get_product_count(category_url):
-  '''Given category page, get total product count'''
-  # TODO: make this not terrible / hardcoded to DOM assumptions
-  page = PageParser(category_url)
-  s = page.get_first_by_selector('.item-numbers').strip()
-  # It's going to be the last number in this tag
-  match = re.search(re.compile('[0-9]+$'), s)
-  if match:
-    return int(match.group(0))
-  return None
-
-
-def get_paginated_urls(category_url):
-  '''Given first page's URL (no params), return all available paginated URLs'''
-  num_products = get_product_count(category_url)
-  num_pages = int(math.ceil(num_products / PAGE_SIZE))
-
-  urls = [category_url]
-  if num_pages > 1:
-    urls += [(
-      category_url + '?' +
-      urllib.urlencode({'pageSize': PAGE_SIZE, 'beginIndex': p * PAGE_SIZE})
-    ) for p in xrange(1, num_pages + 1)]
-  return urls
-
-
-def get_product_urls(category_url):
-  '''Given category first page URL (no params), return all product URLs'''
-  page_urls = get_paginated_urls(category_url)
-  product_urls = []
-  for page_url in page_urls:
-    page = CatalogPageParser(page_url)
-    product_urls += [
-      get_absolute_url(page_url, product_url) for product_url in
-      page.parse().get('product_urls', [])
-    ]
-  return product_urls
-
-
 def get_absolute_url(parent_url, relative_url):
   '''Given parent url and relative url, generate the absolute url'''
   base_url = '/'.join(parent_url.split('/')[:-1])
@@ -59,15 +17,17 @@ def get_absolute_url(parent_url, relative_url):
 
 
 class PageParser(object):
+  '''Generic page parser'''
 
   source = 'performancebike'
 
   def __init__(self, url):
+    self.url = url
     self.page = BeautifulSoup(urllib2.urlopen(url))
 
   def get_by_selector(self, selector):
     '''Return all tag contents matching selector'''
-    return [tag.string.strip().strip(':')
+    return [(tag.string or '').strip().strip(':')
             for tag in self.page.select(selector) if tag]
 
   def get_first_by_selector(self, selector):
@@ -88,8 +48,8 @@ class PageParser(object):
     return float(s.strip('$').replace(',', ''))
 
 
-
-class ComponentPageParser(PageParser):
+class ProductPageParser(PageParser):
+  '''Parser for product page'''
   def parse(self):
     return {
       'name': self.get_first_by_selector('.product_title').strip(),
@@ -97,33 +57,77 @@ class ComponentPageParser(PageParser):
         ['#specsDiv > dl > dt', '#specsDiv > dl > dd'])),
       'price': self.parse_currency(
         self.get_first_by_selector('.sr_product_price .sale_price_val') or
-        self.get_by_selector('.sr_product_price .list_price_val')),
+        self.get_first_by_selector('.sr_product_price .list_price_val')),
       'source': self.source,
+      'url': self.url,
     }
 
 
 class CatalogPageParser(PageParser):
-  '''Parse a catalog listing page'''
+  '''Parse a single catalog listing page'''
   def parse(self):
     return {
       'product_urls': [tag.get('href') for tag in self.page.select('.product-info h2 a')],
     }
 
 
+class CategoryParser(PageParser):
+  '''Parse a category, given the first page of that category'''
+  PAGE_SIZE = 12
+
+  def parse(self):
+    return self.get_product_urls()
+
+  def get_product_urls(self):
+    '''Given category first page URL (no params), return all product URLs'''
+    page_urls = self.get_paginated_urls()
+    product_urls = []
+    for page_url in page_urls:
+      page = CatalogPageParser(page_url)
+      product_urls += [
+        get_absolute_url(page_url, product_url) for product_url in
+        page.parse().get('product_urls', [])
+      ]
+    return product_urls
+
+  def get_paginated_urls(self):
+    '''Given first category URL (no params), return all paginated URLs'''
+    num_products = self.get_product_count()
+    num_pages = int(math.ceil(num_products / self.PAGE_SIZE))
+
+    urls = [self.url]
+    if num_pages > 1:
+      urls += [(
+        self.url + '?' +
+        urllib.urlencode({
+          'pageSize': self.PAGE_SIZE,
+          'beginIndex': p * self.PAGE_SIZE
+        })
+      ) for p in xrange(1, num_pages + 1)]
+    return urls
+
+  def get_product_count(self):
+    '''Given category page, get total product count'''
+    # TODO: make this not terrible / hardcoded to DOM assumptions
+    page = PageParser(self.url)
+    s = page.get_first_by_selector('.item-numbers').strip()
+    # It's going to be the last number in this tag
+    match = re.search(re.compile('[0-9]+$'), s)
+    if match:
+      return int(match.group(0))
+    return None
+
+
 if __name__ == '__main__':
-  urls = [
-    # component page
-    'http://www.performancebike.com/bikes/Product_10052_10551_1175974_-1_400222__400222',
-    # full bike page
-    'http://www.performancebike.com/bikes/Product_10052_10551_1161804_-1_400317__400317',
-  ]
+  # Test getting all product URLs given the first page of a category
+  urls = CategoryParser('http://www.performancebike.com/bikes/SubCategory_10052_10551_400219_-1_400002_400038').parse()
+  print "Found %d products" % len(urls)
 
   # Scrape pages and dump data into sqlite db
-  #for url in urls:
-  #  comp = Component.create(**ComponentPageParser(url).parse())
+  # TODO: some kind of intelligent deduplication check
+  for i, url in enumerate(urls):
+    comp = Component.create(**ProductPageParser(url).parse())
+    print "Parsed product %d of %d" % (i+1, len(urls))
 
   for comp in Component.select():
-    print '%s (%s) - %s' % (comp.name, comp.price, comp.source)
-
-  # Test getting all product URLs given the first page of a category
-  print get_product_urls('http://www.performancebike.com/bikes/SubCategory_10052_10551_400219_-1_400002_400038')
+    print '%s (%s) - %s' % (comp.name, comp.price, comp.url)

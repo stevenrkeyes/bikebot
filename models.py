@@ -30,6 +30,7 @@ class Component(Model):
   price = FloatField()  # USD
   specs = JsonField()  # dictionary of specs
   source = CharField()  # source of info
+  url = CharField()
 
 
 # TODO: this should be somewhere safer
