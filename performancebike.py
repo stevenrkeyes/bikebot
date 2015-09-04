@@ -124,10 +124,14 @@ if __name__ == '__main__':
   print "Found %d products" % len(urls)
 
   # Scrape pages and dump data into sqlite db
-  # TODO: some kind of intelligent deduplication check
   for i, url in enumerate(urls):
-    comp = Component.create(**ProductPageParser(url).parse())
-    print "Parsed product %d of %d" % (i+1, len(urls))
+    # Don't recreate if URL is already in DB
+    # TODO: deduplicate more intelligently
+    if not Component.select().where(Component.url == url).exists():
+      comp = Component.create(**ProductPageParser(url).parse())
+      print "Parsed product %d of %d" % (i+1, len(urls))
+    else:
+      print "Product %d of %d is already in database; skipping" % (i+1, len(urls))
 
   for comp in Component.select():
     print '%s (%s) - %s' % (comp.name, comp.price, comp.url)
