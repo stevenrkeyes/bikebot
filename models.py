@@ -27,10 +27,13 @@ class Component(Model):
     database = db
 
   name = CharField()
-  price = FloatField()  # USD
+  price = FloatField(null=True)  # USD
   specs = JsonField()  # dictionary of specs
   source = CharField()  # source of info
   url = CharField()
+  year = IntegerField(null=True)
+  category_url = CharField(null=True)
+  category_name = CharField(null=True)
 
 
 # TODO: this should be somewhere safer

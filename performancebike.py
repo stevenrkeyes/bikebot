@@ -15,14 +15,24 @@ def get_absolute_url(parent_url, relative_url):
   base_url = '/'.join(parent_url.split('/')[:-1])
   return '/'.join([base_url, relative_url])
 
+def get_year(s):
+  numbers = filter(
+    lambda n: (n > 1900 and n < 2100),
+    [int(s) for s in re.findall(re.compile('[0-9]{4}'), s)])
+  return numbers[0] if numbers else None
+
+def remove_all(s, junk_strings):
+  for junk in junk_strings:
+    s = s.replace(junk, '')
+  return s
+
 
 class PageParser(object):
   '''Generic page parser'''
 
-  source = 'performancebike'
-
-  def __init__(self, url):
+  def __init__(self, url, source=''):
     self.url = url
+    self.source = source
     self.page = BeautifulSoup(urllib2.urlopen(url))
 
   def get_by_selector(self, selector):
@@ -50,9 +60,10 @@ class PageParser(object):
 
 class ProductPageParser(PageParser):
   '''Parser for product page'''
-  def parse(self):
-    return {
-      'name': self.get_first_by_selector('.product_title').strip(),
+  def parse(self, junk_strings=[]):
+    data = {
+      'name': remove_all(self.get_first_by_selector('.product_title').strip(),
+                         junk_strings),
       'specs': dict(self.parse_table(
         ['#specsDiv > dl > dt', '#specsDiv > dl > dd'])),
       'price': self.parse_currency(
@@ -61,6 +72,12 @@ class ProductPageParser(PageParser):
       'source': self.source,
       'url': self.url,
     }
+
+    year = get_year(data['name'])
+    if year:
+      data['year'] = year
+      data['name'] = data['name'].replace(str(year), '').replace('-', '').strip()
+    return data
 
 
 class CatalogPageParser(PageParser):
@@ -75,11 +92,30 @@ class CategoryParser(PageParser):
   '''Parse a category, given the first page of that category'''
   PAGE_SIZE = 12
 
+  def __init__(self, *args, **kwargs):
+    self.junk_strings = kwargs.pop('junk_strings', [])
+    super(CategoryParser, self).__init__(*args, **kwargs)
+
   def parse(self):
-    return self.get_product_urls()
+    self.name = self.get_first_by_selector('.pb-category-intro h1')
+    # Scrape all product pages and dump data into DB
+    urls = self.get_product_urls()
+    for i, url in enumerate(urls):
+      # Don't recreate if URL is already in DB
+      # TODO: deduplicate more intelligently
+      if not Component.select().where(Component.url == url).exists():
+        kwargs = ProductPageParser(url).parse(junk_strings=self.junk_strings)
+        kwargs.update({'category_url': self.url, 'category_name': self.name})
+        comp = Component.create(**kwargs)
+        print "Parsed product %d of %d" % (i+1, len(urls))
+      #else:
+      #  print "Product %d of %d is already in database; skipping" % (i+1, len(urls))
+    return Component.select().where(Component.url << urls)
 
   def get_product_urls(self):
     '''Given category first page URL (no params), return all product URLs'''
+    if hasattr(self, 'urls') and self.urls:
+      return self.urls
     page_urls = self.get_paginated_urls()
     product_urls = []
     for page_url in page_urls:
@@ -88,6 +124,7 @@ class CategoryParser(PageParser):
         get_absolute_url(page_url, product_url) for product_url in
         page.parse().get('product_urls', [])
       ]
+    self.urls = product_urls
     return product_urls
 
   def get_paginated_urls(self):
@@ -109,7 +146,7 @@ class CategoryParser(PageParser):
   def get_product_count(self):
     '''Given category page, get total product count'''
     # TODO: make this not terrible / hardcoded to DOM assumptions
-    page = PageParser(self.url)
+    page = PageParser(self.url, self.source)
     s = page.get_first_by_selector('.item-numbers').strip()
     # It's going to be the last number in this tag
     match = re.search(re.compile('[0-9]+$'), s)
@@ -120,18 +157,15 @@ class CategoryParser(PageParser):
 
 if __name__ == '__main__':
   # Test getting all product URLs given the first page of a category
-  urls = CategoryParser('http://www.performancebike.com/bikes/SubCategory_10052_10551_400219_-1_400002_400038').parse()
-  print "Found %d products" % len(urls)
+  category = CategoryParser(
+    #'http://www.performancebike.com/bikes/SubCategory_10052_10551_400219_-1_400002_400038',
+    # women's road bikes
+    'http://www.performancebike.com/bikes/SubCategory_10052_10551_400320_-1_400001_400306',
+    source='performancebike',
+    junk_strings=['Performance Exclusive']
+  )
+  components = category.parse()
+  print "Found %d products" % components.count()
 
-  # Scrape pages and dump data into sqlite db
-  for i, url in enumerate(urls):
-    # Don't recreate if URL is already in DB
-    # TODO: deduplicate more intelligently
-    if not Component.select().where(Component.url == url).exists():
-      comp = Component.create(**ProductPageParser(url).parse())
-      print "Parsed product %d of %d" % (i+1, len(urls))
-    else:
-      print "Product %d of %d is already in database; skipping" % (i+1, len(urls))
-
-  for comp in Component.select():
-    print '%s (%s) - %s' % (comp.name, comp.price, comp.url)
+  for comp in components:
+    print '%s (%s, %s)' % (comp.name, comp.year, comp.price)
